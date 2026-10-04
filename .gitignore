@@ -1,1 +1,11 @@
 .deploy-tools/
+
+# APK compilado: se publica en GitHub Releases
+apk/
+*.apk
+
+# Claves de firma: NUNCA subir
+*.keystore
+*.jks
+*firma*.txt
+*firma*.json
