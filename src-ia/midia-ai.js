@@ -356,6 +356,136 @@ renderMas=function(){
   bindMasClaude(el);
 };
 
+/* ================= ÓRDENES POR VOZ (botón central) =================
+   Como en FOKUS: pulsas el botón central, hablas, Claude interpreta
+   y propone las acciones; tú las confirmas.                          */
+const vo={st:"idle",text:"",partial:"",reply:"",acciones:[],err:"",rec:null,ctl:null,errAct:""};
+function voSR(){return window.SpeechRecognition||window.webkitSpeechRecognition||null}
+function voView(){
+  let v=document.getElementById("voView");
+  if(!v){v=document.createElement("div");v.id="voView";v.className="vo-bg";v.setAttribute("role","dialog");v.setAttribute("aria-label","Orden por voz");
+    v.addEventListener("click",e=>{if(e.target===v)voClose()});document.body.appendChild(v)}
+  return v;
+}
+function voStopRec(){if(vo.rec){const r=vo.rec;vo.rec=null;r.onend=null;r.onresult=null;r.onerror=null;try{r.abort()}catch(e){}}}
+function voClose(){
+  voStopRec();if(vo.ctl)try{vo.ctl.abort()}catch(e){}vo.ctl=null;vo.st="idle";
+  const v=document.getElementById("voView");if(v){v.hidden=true;v.innerHTML=""}
+  document.body.classList.remove("vo-open");
+}
+function voOpen(){
+  voStopRec();Object.assign(vo,{st:"idle",text:"",partial:"",reply:"",acciones:[],err:"",errAct:""});
+  document.body.classList.add("vo-open");voView().hidden=false;
+  if(NATIVE&&!clHasKey()){vo.st="error";vo.err="Para dar órdenes por voz, pega tu clave de API en Más → Claude (IA).";vo.errAct="key";return voRender()}
+  if(!voSR()){vo.st="write";return voRender()}
+  voListen();
+}
+function voListen(){
+  voStopRec();const SR=voSR();if(!SR){vo.st="write";return voRender()}
+  Object.assign(vo,{st:"listening",text:"",partial:"",reply:"",acciones:[],err:"",errAct:""});voRender();
+  const r=new SR();vo.rec=r;r.lang="es-ES";r.interimResults=true;r.continuous=false;r.maxAlternatives=1;
+  let fin="",bad="";
+  r.onresult=e=>{let f="",p="";for(let i=0;i<e.results.length;i++){const t=e.results[i][0].transcript;if(e.results[i].isFinal)f+=t+" ";else p+=t}
+    fin=f.trim();vo.partial=(f+p).trim();const el=document.getElementById("voLive");if(el)el.textContent=vo.partial||"Te escucho…"};
+  r.onerror=e=>{bad=e&&e.error||"error"};
+  r.onend=()=>{if(vo.rec!==r)return;vo.rec=null;const t=(fin||vo.partial||"").trim();
+    if(t){vo.text=t;vo.partial="";voThink();return}
+    vo.st="error";vo.errAct="";
+    vo.err=bad==="not-allowed"||bad==="service-not-allowed"?"Necesito permiso de micrófono. Actívalo o escribe la orden.":bad==="network"?"El reconocimiento de voz necesita conexión.":bad&&bad!=="no-speech"&&bad!=="aborted"?"No se pudo usar el micrófono. Puedes escribir la orden.":"No te he oído. Prueba otra vez.";
+    voRender()};
+  try{r.start()}catch(e){vo.rec=null;vo.st="write";voRender()}
+}
+function voDoneTalking(){if(vo.rec)try{vo.rec.stop()}catch(e){}}
+function voRules(){
+  return `Eres el asistente de voz de «Mi Día», la app de organización personal de Alex (tareas por categorías con subtareas y fechas límite, recordatorios de calendario —algunos anuales— y gastos e ingresos en euros).
+Alex te dicta una orden en español. Viene del reconocimiento de voz, así que puede traer errores: interprétala con sentido común ("doce euros con cincuenta" = 12.5, "el martes que viene" = la fecha correspondiente, "mañana a las diez" = mañana 10:00).
+Si pide crear, apuntar, recordar, completar, borrar, planificar u organizar algo, propón SIEMPRE las acciones exactas en "acciones" (puede ser una o varias en la misma frase); él las confirmará antes de que se ejecuten. Un recordatorio con día y hora concretos es un "event"; algo por hacer es un "task" (con dueDate si dice cuándo).
+Si es una pregunta, responde en 1-3 frases en "respuesta" con acciones = [] y basándote solo en los DATOS. Si no entiendes la orden, pregunta brevemente.
+En "respuesta" pon siempre una frase muy corta que resuma lo que vas a hacer (ej.: "Te apunto el dentista el jueves a las 10.").
+FORMATO OBLIGATORIO: responde SOLO con un objeto JSON {"respuesta":"<frase>","acciones":[ ... ]}.
+${clActionSpec()}
+DATOS DEL USUARIO (JSON):
+${JSON.stringify(clContext())}`;
+}
+async function voThink(){
+  vo.st="thinking";vo.err="";voRender();
+  const sample=await clSample();
+  if(vo.st!=="thinking")return;
+  if(!sample){vo.st="error";vo.err=CL_ERR.not_declared;return voRender()}
+  vo.ctl=new AbortController();const ctl=vo.ctl;
+  try{
+    const r=await sample.json([{role:"user",content:voRules()},{role:"assistant",content:'{"respuesta":"Entendido. Dime la orden.","acciones":[]}'},{role:"user",content:vo.text}],{modelTier:"default",cache:false,signal:ctl.signal});
+    if(vo.ctl!==ctl||vo.st!=="thinking")return;
+    const o=Array.isArray(r)?{respuesta:"",acciones:r}:(r&&typeof r==="object"?r:{respuesta:String(r)});
+    vo.acciones=(Array.isArray(o.acciones)?o.acciones:[]).filter(a=>a&&typeof a==="object"&&a.type&&buildAiSmartPreview(a));
+    vo.reply=String(o.respuesta||o.texto||(vo.acciones.length?"Esto es lo que haría:":"")).trim();
+    vo.st=vo.acciones.length?"confirm":"answer";
+  }catch(e){
+    if(vo.ctl!==ctl)return;
+    if(e&&e.code==="cancelled")return;
+    if(e&&e.code==="invalid_json"&&e.text){vo.reply=String(e.text);vo.acciones=[];vo.st="answer"}
+    else{vo.st="error";vo.err=clErrText(e);vo.errAct=""}
+  }
+  vo.ctl=null;voRender();if(NATIVE)try{clRefreshUsage()}catch(e){}
+}
+function voRun(){
+  const sel=vo.acciones.filter(a=>!a._off);
+  if(!sel.length){toast("Selecciona al menos una acción");return}
+  const res=sel.map(a=>{try{return applyOneSmartAction(a)}catch(e){return {ok:false,msg:"⚠️ Error al ejecutar"}}});
+  clAfterApply(res);
+  const bad=res.filter(r=>!r.ok);
+  const tab=(res.find(r=>r.ok&&r.tab&&!r.queryOnly)||{}).tab;
+  voClose();
+  toast(bad.length===res.length?bad[0].msg:res.length===1?res[0].msg:`✅ ${res.length-bad.length} de ${res.length} acciones hechas`);
+  if(tab&&tab!==S.activeTab&&typeof setTab==="function")try{setTab(tab)}catch(e){}
+}
+function voWrite(){voStopRec();vo.st="write";voRender()}
+function voSendWritten(){const t=(document.getElementById("voText")||{}).value||"";if(!t.trim())return;vo.text=t.trim();voThink()}
+const VO_MIC='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+function voRender(){
+  const v=document.getElementById("voView");if(!v||v.hidden)return;
+  const st=vo.st,said=vo.text?`<div class="vo-said">«${esc(vo.text)}»</div>`:"";let body="",btns="";
+  if(st==="listening"){
+    body=`<div class="vo-mic on"><span class="vo-ring"></span><button class="vo-btn" data-vo="stop" aria-label="He terminado">${VO_MIC}</button></div>
+      <div class="vo-live" id="voLive" aria-live="polite">${esc(vo.partial||"Te escucho…")}</div>
+      <div class="vo-hint">Ej.: «mañana dentista a las 10», «he gastado 12 € en comida», «apunta comprar pan»</div>`;
+    btns=`<button class="vo-b2" data-vo="write">✏️ Escribir</button><button class="vo-b1" data-vo="stop">Listo</button>`;
+  }else if(st==="thinking"){
+    body=`${said}<div class="vo-think"><span class="cl-dots"><i></i><i></i><i></i></span>Claude está pensando…</div>`;
+    btns=`<button class="vo-b2" data-vo="close">Cancelar</button>`;
+  }else if(st==="confirm"){
+    body=`${said}${vo.reply?`<div class="vo-reply">${md(vo.reply)}</div>`:""}<div class="vo-acts">${vo.acciones.map((a,i)=>`<label class="vo-act"><input type="checkbox" data-voc="${i}" ${a._off?"":"checked"}><span>${buildAiSmartPreview(a)}</span></label>`).join("")}</div>`;
+    btns=`<button class="vo-b2 vo-ico" data-vo="again" aria-label="Repetir la orden">${VO_MIC}</button><button class="vo-b2" data-vo="close">Cancelar</button><button class="vo-b1" data-vo="run">Confirmar</button>`;
+  }else if(st==="answer"){
+    body=`${said}<div class="vo-reply">${md(vo.reply||"No he encontrado nada que hacer.")}</div>`;
+    btns=`<button class="vo-b2" data-vo="chat">Seguir en el chat</button><button class="vo-b1" data-vo="again">${VO_MIC} Otra orden</button>`;
+  }else if(st==="write"){
+    body=`<textarea id="voText" class="vo-ta" rows="3" maxlength="400" placeholder="Ej.: el viernes cena con Laura a las 21:00">${esc(vo.text||"")}</textarea>`;
+    btns=`${voSR()&&!(NATIVE&&!clHasKey())?`<button class="vo-b2 vo-ico" data-vo="again" aria-label="Dictar">${VO_MIC}</button>`:""}<button class="vo-b2" data-vo="close">Cancelar</button><button class="vo-b1" data-vo="send">Enviar</button>`;
+  }else if(st==="error"){
+    body=`${said}<div class="cl-err">${esc(vo.err)}</div>`;
+    btns=vo.errAct==="key"?`<button class="vo-b2" data-vo="close">Cerrar</button><button class="vo-b1" data-vo="key">Ir a Claude (IA)</button>`
+      :`<button class="vo-b2" data-vo="write">✏️ Escribir</button>${voSR()?`<button class="vo-b1" data-vo="again">${VO_MIC} Reintentar</button>`:""}`;
+  }
+  v.innerHTML=`<div class="vo-sheet"><div class="vo-head"><span class="cl-logo">✦</span><b>${st==="write"?"Escribe la orden":st==="confirm"?"¿Lo hago?":"Dime qué hago"}</b><button class="vo-x" data-vo="close" aria-label="Cerrar">✕</button></div>${body}<div class="vo-row">${btns}</div></div>`;
+  v.querySelectorAll("[data-vo]").forEach(b=>b.onclick=()=>{const a=b.dataset.vo;
+    if(a==="close")voClose();else if(a==="stop")voDoneTalking();else if(a==="write")voWrite();else if(a==="again")voListen();
+    else if(a==="run")voRun();else if(a==="send")voSendWritten();
+    else if(a==="chat"){const t=vo.text;voClose();clOpenChat(t)}
+    else if(a==="key"){voClose();try{setTab("mas");_masPage="claude";renderMas()}catch(e){}}});
+  v.querySelectorAll("[data-voc]").forEach(c=>c.onchange=()=>{vo.acciones[+c.dataset.voc]._off=!c.checked});
+  const ta=document.getElementById("voText");
+  if(ta){ta.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();voSendWritten()}});setTimeout(()=>{try{ta.focus()}catch(e){}},120)}
+}
+window.voOpen=voOpen;window.voClose=voClose;
+/* El botón central de abajo abre la orden por voz (si se está escribiendo una tarea sigue siendo «+»;
+   deslizarlo hacia arriba mantiene el gesto de voz que ya tenía). */
+document.addEventListener("click",e=>{
+  const b=e.target&&e.target.closest&&e.target.closest("#navFabBtn");if(!b)return;
+  if(window._addBtnDragged||b.classList.contains("input-active"))return;
+  e.stopPropagation();e.preventDefault();voOpen();
+},true);
+
 /* ---------- DOM: botón de chat en la cabecera y ticket en «Añadir» ---------- */
 document.addEventListener("DOMContentLoaded",()=>{
   const acts=document.querySelector(".hdr-actions"),ai=document.getElementById("aiCmdBtn");

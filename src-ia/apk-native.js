@@ -78,6 +78,7 @@ const _rm=renderMas;renderMas=function(){const r=_rm.apply(this,arguments);if(_m
   const st=el.querySelector("#mdSumTime");st&&st.addEventListener("change",()=>{notif().summaryTime=st.value||"08:30";save()})}return r};
 /* ---------- botón atrás de Android ---------- */
 window.__mdBack=function(){
+  const vv=document.getElementById("voView");if(vv&&!vv.hidden){voClose();return true}
   const cv=document.getElementById("clView");if(cv&&!cv.hidden){clCloseChat();return true}
   const vc=document.getElementById("vConfirm");if(vc&&vc.style.display==="flex"){vc.style.display="none";return true}
   const ovs=[...document.querySelectorAll(".overlay:not([hidden])")];if(ovs.length){const o=ovs[ovs.length-1];if(o.id==="aiCmdOverlay"&&typeof closeAiSmart==="function")closeAiSmart();else if(o.id==="sumOverlay"){try{clearSumCountdowns()}catch(e){}o.setAttribute("hidden","")}else o.setAttribute("hidden","");return true}
@@ -88,7 +89,7 @@ window.__mdBack=function(){
 };
 /* ---------- accesos desde el widget / atajos ---------- */
 window.__mdOpen=function(what){
-  try{if(what==="chat")clOpenChat();else if(what==="scan")clScanTicket();else if(what==="voice"){clOpenChat();setTimeout(()=>{const m=document.getElementById("clMic");m&&!m.hidden&&m.click()},350)}
+  try{if(what==="chat")clOpenChat();else if(what==="scan")clScanTicket();else if(what==="voice"){setTab("tareas");setTimeout(()=>voOpen(),300)}
   else if(what==="add"){setTab("tareas");setTimeout(()=>{const i=document.getElementById("taskInput");i&&i.focus()},250)}
   else if(what==="calendario"||what==="gastos"||what==="tareas")setTab(what)}catch(e){console.error(e)}
 };
